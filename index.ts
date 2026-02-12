@@ -155,19 +155,34 @@ async function checkEvents(cli: RPC_Client, charge_point: any) {
     if (existsSync('./events.json')) {
       const eventsJson = readFileSync('./events.json', { encoding: 'utf8' })
       const events: any[] = JSON.parse(eventsJson)
-      let newEvents = Array.from(events)
+      let newEvents: any[] = Array.from(events)
+
       for (const event of events) {
-        logger.debug({ event }, 'Running logic for event: ')
         if (event.notBefore) {
           // this is a scheduled event, CAUTION.
           if (new Date(event.notBefore).getTime() > Date.now()) {
-            logger.info({ event }, 'This is a scheduled event that will be run later!')
+            logger.info({
+              event: event.method,
+              scheduled_time: new Date(event.notBefore).getTime(),
+              current_time: Date.now()
+            }, 'This is a scheduled event that will be run later!')
+            continue
           }
         }
+        logger.debug({ event }, 'Running logic for event: ')
+
+        const done = () => {
+          newEvents.splice(newEvents.indexOf(event), 1)
+          appendFileSync('./sent-events.json', JSON.stringify(event) + '\n')
+        }
+
         switch (event.method) {
           case 'StatusNotification':
             // try to find cp en cid in config
-            const con = charge_points.find(e => e.chargePointSerialNumber === charge_point.chargePointSerialNumber).connectors.find(e => e.connectorId === event.payload.connectorId)
+            const con = charge_points
+              .find(e => e.chargePointSerialNumber === charge_point.chargePointSerialNumber)
+              .connectors
+              .find(e => e.connectorId === event.payload.connectorId)
             if (con) {
               logger.debug('Found the connector!')
               try {
@@ -176,8 +191,7 @@ async function checkEvents(cli: RPC_Client, charge_point: any) {
                 con.errorCode = event.payload.errorCode
                 console.log(charge_points)
                 writeFileSync('./charge-points.json', JSON.stringify(charge_points))
-                newEvents = newEvents.splice(newEvents.indexOf(event), 1)
-                appendFileSync('./sent-events.json', JSON.stringify(event) + '\n')
+                done()
               } catch {
                 logger.error({ event }, 'Error while sending: ' + event.method)
               }
@@ -185,15 +199,98 @@ async function checkEvents(cli: RPC_Client, charge_point: any) {
               logger.warn('Could not find the connector!')
             }
             break
+
+          case 'StartTransaction':
+            try {
+              await cli.call('StatusNotification', {
+                connectorId: event.payload.connectorId,
+                errorCode: 'NoError',
+                status: 'Preparing'
+              })
+              const startTxResp: cStartTransaction = await cli.call('StartTransaction', event.payload) as cStartTransaction
+              if (startTxResp.transactionId) {
+                // schedule status notification for charging
+                newEvents.push({
+                  method: 'StatusNotification',
+                  notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
+                  payload: {
+                    connectorId: event.payload.connectorId,
+                    errorCode: 'NoError',
+                    status: 'Charging'
+                  }
+                })
+                addTransaction({
+                  transactionId: startTxResp.transactionId,
+                  startTime: event.payload.timestamp,
+                  ...event.payload
+                })
+                done()
+              }
+            } catch {
+              logger.error({ event }, 'Error while sending: ' + event.method)
+            }
+            break
+
+          case 'StopTransaction':
+            try {
+              const stopTxResp: cStopTransaction = await cli.call('StopTransaction', event.payload) as cStopTransaction
+              // schedule status notification for finishing and available
+              newEvents.push({
+                method: 'StatusNotification',
+                notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
+                payload: {
+                  connectorId: event.payload.connectorId,
+                  errorCode: 'NoError',
+                  status: 'Finishing'
+                }
+              })
+              newEvents.push({
+                method: 'StatusNotification',
+                notBefore: new Date(Date.now() + 17 * 1000).toISOString(),
+                payload: {
+                  connectorId: event.payload.connectorId,
+                  errorCode: 'NoError',
+                  status: 'Available'
+                }
+              })
+              // endTransaction({
+              //   transactionId: startTxResp.transactionId,
+              //   startTime: event.payload.timestamp,
+              //   ...event.payload
+              // })
+              done()
+            } catch {
+              logger.error({ event }, 'Error while sending: ' + event.method)
+            }
+            break
         }
       }
-      logger.debug({ events: newEvents }, 'New events!')
+      logger.debug({ events_length: newEvents.length }, 'New events!')
       writeFileSync('./events.json', JSON.stringify(newEvents), { encoding: 'utf8' })
     } else {
       logger.debug('There is no events.json')
     }
   } catch (e) {
     logger.error('Error while checking events from disk!')
+  }
+}
+
+function addTransaction(transaction: any) {
+  try {
+    if (existsSync('./transactions.json')) {
+      const txJson = readFileSync('./transactions.json', { encoding: 'utf8' })
+      if (txJson) {
+        const transactions: any[] = JSON.parse(txJson)
+        transactions.push(transaction)
+        writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
+      } else {
+        writeFileSync('./transactions.json', JSON.stringify([transaction]), { encoding: 'utf8' })
+      }
+    } else {
+      writeFileSync('./transactions.json', JSON.stringify([transaction]), { encoding: 'utf8' })
+    }
+  } catch {
+    logger.error('Error while adding transaction to disk!')
   }
 }
 
