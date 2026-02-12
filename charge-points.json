@@ -104,7 +104,7 @@
       {
         "connectorId": 2,
         "errorCode": "NoError",
-        "status": "Available"
+        "status": "Reserved"
       }
     ]
   }

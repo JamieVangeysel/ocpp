@@ -1,9 +1,19 @@
-import OCPP_Client from './client'
-import { cBootNotification, cHeartbeat } from './typedefs/ocpp-message'
+import {
+  cBootNotification,
+  cHeartbeat,
+  cStartTransaction, cStopTransaction,
+  rStartTransaction,
+  rStopTransaction
+} from './typedefs/ocpp-message'
 
 import charge_points from './charge-points.json'
 
 import pino, { Logger } from 'pino'
+import { readFileSync } from 'fs'
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+import RPC_Client from 'ocpp-rpc/lib/client'
+
+const { RPCClient } = require('ocpp-rpc')
 
 // https://github.com/mikuso/ocpp-rpc/tree/master/lib
 
@@ -31,12 +41,12 @@ async function main() {
   for (let charge_point of charge_points) {
     let iHeartbeatInterval
     logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Starting OCPP client for chargepoint!')
-    const cli = new OCPP_Client({
-      // endpoint: 'ws://ocpp.road.io/e-flux', // the OCPP endpoint URL
-      endpoint: 'ws://172.18.20.35:8080',
+    const cli: RPC_Client = new RPCClient({
+      endpoint: 'ws://ocpp.road.io/e-flux', // the OCPP endpoint URL
+      // endpoint: 'ws://172.18.20.35:8080',
       identity: charge_point.chargePointSerialNumber, // the OCPP identity
-      protocols: ['ocpp1.6']          // client understands ocpp1.6 subprotocol
-      // strictMode: false                // enable strict validation of requests & responses
+      protocols: ['ocpp1.6'],          // client understands ocpp1.6 subprotocol
+      strictMode: false                // enable strict validation of requests & responses
     })
 
     logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Connecting to backend...')
@@ -56,11 +66,12 @@ async function main() {
     if (bootResponse.status === 'Accepted') {
       logger.info({ charge_point: charge_point.chargePointSerialNumber, bootResponse }, 'BootNotification is accepted!')
       if (charge_point.configuration['HeartbeatInterval']) {
-        const heartbeatInterval = charge_point.configuration['HeartbeatInterval'].value
+        const heartbeatInterval = Math.min(charge_point.configuration['HeartbeatInterval'].value, bootResponse.interval)
         if (heartbeatInterval > 0) {
+          heartbeat(cli).then()
           logger.info({ charge_point: charge_point.chargePointSerialNumber }, 'Starting Heartbeat interval!')
           iHeartbeatInterval = globalThis.setInterval(() => {
-            heartbeat(cli)
+            heartbeat(cli).then()
           }, heartbeatInterval * 1000)
         } else {
           logger.error({ heartbeatInterval }, 'Heartbeat interval value is invalid.')
@@ -74,9 +85,115 @@ async function main() {
         status: 'Available'
       })
 
+      for (let connector of charge_point.connectors) {
+        await cli.call('StatusNotification', {
+          connectorId: connector.connectorId,
+          errorCode: connector.errorCode,
+          status: connector.status
+        })
+      }
+
+      // check if there are transactions in backlog
+      try {
+        const txJson = readFileSync('./transactions.json', { encoding: 'utf8' })
+        if (txJson) {
+          const transactions: any[] = JSON.parse(txJson)
+          const unsendTx = transactions.filter(e => e.id === undefined || !e.sent)
+          logger.debug({ unsendTx }, 'The following transactions are stored in backlog and must be send')
+          for (const tx of transactions) {
+            if (tx.id && tx.sent) {
+              // the transaction was already sent to server
+              continue
+            }
+            if (!tx.id) {
+              const startTx: rStartTransaction = {
+                connectorId: tx.connectorId,
+                idTag: tx.idTag,
+                meterStart: 0,
+                timestamp: tx.startTime
+              }
+              console.log(`Received ${tx.startTime} to ${tx.stopTime} Charge: ${tx.chargeEnergy}Wh`)
+              const resp: cStartTransaction = await cli.call('StartTransaction', startTx) as cStartTransaction
+              if (resp.transactionId) {
+                console.debug({ transaction_id: resp.transactionId }, 'Started transaction')
+                tx.id = resp.transactionId
+                writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
+              }
+            }
+            if (tx.id) {
+              const stopTx: rStopTransaction = {
+                transactionId: tx.id,
+                meterStop: tx.chargeEnergy,
+                reason: 'EVDisconnected',
+                timestamp: tx.stopTime
+              }
+              const resp: cStopTransaction = await cli.call('StopTransaction', stopTx)
+              if (resp) {
+                console.debug({ transaction_id: tx.id }, 'Stopped transaction')
+                tx.sent = true
+                writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
+              }
+            }
+          }
+        }
+      } catch (error) {
+        logger.error({ error }, 'Error while reading transactions from disk')
+      }
+
+      // start custom event watcher
+      globalThis.setInterval(() => {
+        checkEvents(cli, charge_point).then()
+      }, 10 * 1000)
     } else {
       logger.info({ bootResponse }, 'BootNotification response is not accepted!, Handle this ...')
     }
+  }
+}
+
+async function checkEvents(cli: RPC_Client, charge_point: any) {
+  try {
+    if (existsSync('./events.json')) {
+      const eventsJson = readFileSync('./events.json', { encoding: 'utf8' })
+      const events: any[] = JSON.parse(eventsJson)
+      let newEvents = Array.from(events)
+      for (const event of events) {
+        logger.debug({ event }, 'Running logic for event: ')
+        if (event.notBefore) {
+          // this is a scheduled event, CAUTION.
+          if (new Date(event.notBefore).getTime() > Date.now()) {
+            logger.info({ event }, 'This is a scheduled event that will be run later!')
+          }
+        }
+        switch (event.method) {
+          case 'StatusNotification':
+            // try to find cp en cid in config
+            const con = charge_points.find(e => e.chargePointSerialNumber === charge_point.chargePointSerialNumber).connectors.find(e => e.connectorId === event.payload.connectorId)
+            if (con) {
+              logger.debug('Found the connector!')
+              try {
+                await cli.call('StatusNotification', event.payload)
+                con.status = event.payload.status
+                con.errorCode = event.payload.errorCode
+                console.log(charge_points)
+                writeFileSync('./charge-points.json', JSON.stringify(charge_points))
+                newEvents = newEvents.splice(newEvents.indexOf(event), 1)
+                appendFileSync('./sent-events.json', JSON.stringify(event) + '\n')
+              } catch {
+                logger.error({ event }, 'Error while sending: ' + event.method)
+              }
+            } else {
+              logger.warn('Could not find the connector!')
+            }
+            break
+        }
+      }
+      logger.debug({ events: newEvents }, 'New events!')
+      writeFileSync('./events.json', JSON.stringify(newEvents), { encoding: 'utf8' })
+    } else {
+      logger.debug('There is no events.json')
+    }
+  } catch (e) {
+    logger.error('Error while checking events from disk!')
   }
 }
 
@@ -84,7 +201,7 @@ async function heartbeat(cli) {
   // send a Heartbeat request and await the response
   const heartbeatResponse: cHeartbeat = await cli.call('Heartbeat', {}) as cHeartbeat
   // read the current server time from the response
-  logger.info({ time: heartbeatResponse.currentTime }, 'Server time is:')
+  logger.info({ currentTime: heartbeatResponse.currentTime }, 'Server time is:')
 }
 
 main()
