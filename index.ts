@@ -222,24 +222,24 @@ async function checkEvents(cli: RPC_Client, charge_point: any) {
             try {
               const stopTxResp: cStopTransaction = await cli.call('StopTransaction', event.payload) as cStopTransaction
               // schedule status notification for finishing and available
-              newEvents.push({
-                method: 'StatusNotification',
-                notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
-                payload: {
-                  connectorId: event.payload.connectorId,
-                  errorCode: 'NoError',
-                  status: 'Finishing'
-                }
-              })
-              newEvents.push({
-                method: 'StatusNotification',
-                notBefore: new Date(Date.now() + 17 * 1000).toISOString(),
-                payload: {
-                  connectorId: event.payload.connectorId,
-                  errorCode: 'NoError',
-                  status: 'Available'
-                }
-              })
+              // newEvents.push({
+              //   method: 'StatusNotification',
+              //   notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
+              //   payload: {
+              //     connectorId: event.payload.connectorId,
+              //     errorCode: 'NoError',
+              //     status: 'Finishing'
+              //   }
+              // })
+              // newEvents.push({
+              //   method: 'StatusNotification',
+              //   notBefore: new Date(Date.now() + 17 * 1000).toISOString(),
+              //   payload: {
+              //     connectorId: event.payload.connectorId,
+              //     errorCode: 'NoError',
+              //     status: 'Available'
+              //   }
+              // })
               // endTransaction({
               //   transactionId: startTxResp.transactionId,
               //   startTime: event.payload.timestamp,
