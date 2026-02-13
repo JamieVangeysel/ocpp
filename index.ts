@@ -19,21 +19,8 @@ const { RPCClient } = require('ocpp-rpc')
 
 let logger: Logger
 
-// const targets: any[] = [
-//   {
-//     level: 'debug',
-//     target: 'pino/file',
-//     options: {
-//       destination: 1
-//     }
-//   }
-// ]
-
 logger = pino()
 logger.level = 'trace'
-// pino.transport({
-//   targets
-// })
 
 async function main() {
   logger.debug({ charge_points: charge_points.length }, 'main')
@@ -263,6 +250,16 @@ async function checkEvents(cli: RPC_Client, charge_point: any) {
               logger.error({ event }, 'Error while sending: ' + event.method)
             }
             break
+
+          case 'MeterValues':
+            try {
+              await cli.call('MeterValues', event.payload)
+              done()
+            } catch {
+              logger.error({ event }, 'Error while sending: ' + event.method)
+            }
+            break
+
         }
       }
       logger.debug({ events_length: newEvents.length }, 'New events!')
@@ -302,3 +299,4 @@ async function heartbeat(cli) {
 }
 
 main()
+
