@@ -16,7 +16,9 @@
   "main": "index.ts",
   "scripts": {
     "build": "esbuild ./index.ts --allow-overwrite --bundle --platform=node --minify --packages=external --external:./config.js --outfile=index.js",
+    "build:server": "esbuild ./server.ts --allow-overwrite --bundle --platform=node --minify --packages=external --external:./config.js --outfile=server.js",
     "start": "node index.js | pino-pretty",
+    "start:server": "node server.js | pino-pretty",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
