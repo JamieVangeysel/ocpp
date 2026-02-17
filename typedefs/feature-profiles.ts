@@ -18,7 +18,7 @@ type FeatureProfileCore =
   'RemoteStartTransaction' |
   'RemoteStopTransaction' |
   'Reset' | // Chargers support hard reset and soft reset.
-  // Hard reset fully reboot charger. The resets gracefully stop charging session if one is in pro- gress before resetting.
+  // Hard reset fully reboot charger. The resets gracefully stop charging session if one is in progress before resetting.
   // Soft reset gracefully stops charging session if one is in progress before resetting. Then the charger gracefully disconnects from the server. After disconnection, the charger will reboot it- self.
   'StartTransaction' |
   'StatusNotification' |

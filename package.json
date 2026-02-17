@@ -22,6 +22,7 @@
     "deploy": "npm run build && scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs && ssh java@10.220.20.4 'pm2 restart ocpp-server'"
   },
   "dependencies": {
+    "mqtt": "^5.15.0",
     "ocpp-rpc": "^2.2.1",
     "pino": "^10.3.1"
   },

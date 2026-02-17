@@ -1,6 +1,7 @@
 import pino, { type Logger } from 'pino'
 import { RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
+import { connect, MqttClient } from 'mqtt'
 
 const { RPCClient } = require('ocpp-rpc')
 
@@ -20,7 +21,7 @@ async function main() {
   // start rpc_server
   const server: RPCServer = new RPCServer({
     protocols: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
-    strictMode: false       // enable strict validation of requests & responses
+    strictMode: false // enable strict validation of requests & responses
   })
 
   server.auth((accept, reject, handshake) => {
@@ -33,9 +34,11 @@ async function main() {
 
   server.on('client', async (client) => {
     const cli_logger = logger.child({ client: client.identity })
+
     const ef_logger = cli_logger.child({ backend: 'e-flux' })
     const cs_logger = cli_logger.child({ backend: 'charge.space' })
-    cli_logger.debug('connected!') // `XYZ123 connected!`
+
+    cli_logger.debug('connected!')
 
     if (backends[`${client.identity}-e-flux`]) {
       ef_logger.debug({ backend: `${client.identity}-e-flux` },
@@ -120,6 +123,14 @@ async function main() {
       // This handler will be called if the incoming method cannot be handled elsewhere.
       cli_logger.info(`Server got ${method} from ${client.identity}:`, params)
 
+      if (mq_client.connected) {
+        cli_logger.debug('Publish to MQTT')
+        mq_client.publish(`ocpp/${client.identity}/${method}`, Buffer.from(JSON.stringify(params)), {
+          qos: 0,
+          retain: false
+        })
+      }
+
       try {
         // custom code to fix charge amps data
         let ca_params: any = Object.assign({}, params)
@@ -152,6 +163,11 @@ async function main() {
 
   await server.listen(8080)
   logger.info('Server listening on port 8080!')
+
+  let mq_client: MqttClient = connect('mqtt://localhost:1883')
+  mq_client.on('connect', () => {
+    logger.info('Connected to MQTT server')
+  })
 }
 
 await main()
