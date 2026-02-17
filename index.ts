@@ -13,9 +13,7 @@ let logger: Logger
 
 let backends: { [key: string]: RPC_Client } = {}
 
-logger = pino({
-  level: 'trace'
-})
+logger = pino({ level: 'trace' })
 
 async function main() {
   // start rpc_client
@@ -35,11 +33,13 @@ async function main() {
 
   server.on('client', async (client) => {
     const cli_logger = logger.child({ client: client.identity })
+    const ef_logger = cli_logger.child({ backend: 'e-flux' })
+    const cs_logger = cli_logger.child({ backend: 'charge.space' })
     cli_logger.debug('connected!') // `XYZ123 connected!`
 
     if (backends[`${client.identity}-e-flux`]) {
-      cli_logger.debug({ backend: `${client.identity}-e-flux` },
-        'Already created a backend to e-FLux'
+      ef_logger.debug({ backend: `${client.identity}-e-flux` },
+        'Already created a backend'
       )
     } else {
       backends[`${client.identity}-e-flux`] = new RPCClient({
@@ -48,12 +48,12 @@ async function main() {
         protocols: ['ocpp1.6'], // client understands ocpp1.6, 2.0.1 and 2.1 subprotocol
         strictMode: false                               // enable strict validation of requests & responses
       })
-      cli_logger.debug('Created backend to e-FLux')
+      ef_logger.debug('Created backend')
     }
 
     const eflux: RPC_Client | undefined = backends[`${client.identity}-e-flux`]
     if (!eflux) {
-      cli_logger.error('Failed to create backend to e-FLux')
+      ef_logger.error('Failed to create backend')
       throw new Error('Failed to create backend to e-FLux')
     }
 
@@ -61,15 +61,15 @@ async function main() {
       if (eflux.state !== 1) {
         // connect to the OCPP server
         await eflux.connect()
-        cli_logger.debug('Connected to e-FLux')
+        ef_logger.debug('Connected!')
       }
     } catch {
-      cli_logger.debug('Failed to connect to e-FLux')
+      ef_logger.debug('Failed to connect!')
     }
 
     if (backends[`${client.identity}-charge.space`]) {
-      cli_logger.debug({ backend: `${client.identity}-charge.space` },
-        'Already created a backend to charge.space'
+      cs_logger.debug({ backend: `${client.identity}-charge.space` },
+        'Already created a backend'
       )
     } else {
       backends[`${client.identity}-charge.space`] = new RPCClient({
@@ -78,22 +78,22 @@ async function main() {
         protocols: ['ocpp1.6'],                   // client understands ocpp1.6 subprotocol
         strictMode: false                         // enable strict validation of requests & responses
       })
-      cli_logger.debug('Created backend to charge.space')
+      cs_logger.debug('Created backend')
     }
 
     const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]
     if (!charge_amps) {
-      cli_logger.error('Failed to create backend to charge.space')
+      cs_logger.error('Failed to create backend')
       // throw new Error('Failed to create backend to charge.space')
     } else {
       try {
         if (charge_amps.state !== 1) {
           // connect to the OCPP server
           await charge_amps.connect()
-          cli_logger.debug('Connected to charge.space')
+          cs_logger.debug('Connected!')
         }
       } catch {
-        cli_logger.debug('Failed to connect to charge.space')
+        cs_logger.debug('Failed to connect!')
       }
     }
 
@@ -108,9 +108,9 @@ async function main() {
       let resp: any = Promise.resolve(undefined)
       try {
         resp = await eflux?.call(method, params)
-        cli_logger.debug({ method, params, resp }, 'Sent to E-Flux')
+        ef_logger.debug({ method, params, resp }, 'Sent!')
       } catch {
-        cli_logger.error('Error while sending to E-Flux!')
+        ef_logger.error('Error while sending!')
       }
       return resp
     }
@@ -137,14 +137,14 @@ async function main() {
             break
         }
         charge_amps?.call(method, ca_params).then((r: any) => {
-          cli_logger.debug('Sent to ChargeAmps complete')
+          cs_logger.debug({ method, params: ca_params, resp: r }, 'Sent!')
           if (method === 'StartTransaction') {
             tx_chargeamps = r.transactionId
-            cli_logger.debug('Received StartTransaction result from chargeAmps Backend!')
+            cs_logger.debug('Received StartTransaction result!')
           }
         })
       } catch {
-        cli_logger.error('Error while sending to ChargeAmps!')
+        cs_logger.error('Error while sending!')
       }
       return await defaultHandler(method, params)
     })
