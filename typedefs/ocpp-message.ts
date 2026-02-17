@@ -1,5 +1,27 @@
 import { MyFeatureProfile } from './feature-profiles'
-import { AvailabilityStatus, AvailabilityType, CancelReservationStatus, CertificateSignedStatus, ChargePointErrorCode, ChargePointStatus, ChargingProfile, ChargingProfilePurposeType, ChargingProfileStatus, ClearChargingProfileStatus, ConfigurationStatus, IdTagInfo, KeyValue, MessageType, MeterValue, Reason, RegistrationStatus, RemoteStartStopStatus, ReservationStatus, ResetType, UnlockStatus } from './types'
+import {
+  AvailabilityStatus,
+  AvailabilityType,
+  CancelReservationStatus,
+  CertificateSignedStatus,
+  ChargePointErrorCode,
+  ChargePointStatus,
+  ChargingProfile,
+  ChargingProfilePurposeType,
+  ChargingProfileStatus,
+  ClearChargingProfileStatus,
+  ConfigurationStatus,
+  IdTagInfo,
+  KeyValue,
+  MessageType,
+  MeterValue,
+  Reason,
+  RegistrationStatus,
+  RemoteStartStopStatus,
+  ReservationStatus,
+  ResetType,
+  UnlockStatus
+} from './types'
 
 export type rMessage = [MessageTypeId: MessageType, UniqueId: string, Action: MyFeatureProfile, Payload: any]
 export type cMessage = [MessageTypeId: MessageType, UniqueId: string, Payload: any]

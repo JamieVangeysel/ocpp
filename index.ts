@@ -1,90 +1,173 @@
-import OCPP_Client from './client'
-import { cBootNotification, cHeartbeat } from './typedefs/ocpp-message'
+import pino, { type Logger } from 'pino'
+import { RPCServer } from 'ocpp-rpc'
+import RPC_Client from 'ocpp-rpc/lib/client'
+import { connect, MqttClient } from 'mqtt'
 
-import charge_points from './charge-points.json'
-
-import pino, { Logger } from 'pino'
+const { RPCClient } = require('ocpp-rpc')
 
 // https://github.com/mikuso/ocpp-rpc/tree/master/lib
+// wss://ocpp.charge.space/ocpp
+// 2203054852M
 
+let tx_chargeamps: number = 124341561
 let logger: Logger
 
-// const targets: any[] = [
-//   {
-//     level: 'debug',
-//     target: 'pino/file',
-//     options: {
-//       destination: 1
-//     }
-//   }
-// ]
+let backends: { [key: string]: RPC_Client } = {}
 
-logger = pino()
-logger.level = 'trace'
-// pino.transport({
-//   targets
-// })
+logger = pino({ level: 'trace' })
 
 async function main() {
-  logger.debug({ charge_points: charge_points.length }, 'main')
-  // return
-  for (let charge_point of charge_points) {
-    let iHeartbeatInterval
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Starting OCPP client for chargepoint!')
-    const cli = new OCPP_Client({
-      // endpoint: 'ws://ocpp.road.io/e-flux', // the OCPP endpoint URL
-      endpoint: 'ws://172.18.20.35:8080',
-      identity: charge_point.chargePointSerialNumber, // the OCPP identity
-      protocols: ['ocpp1.6']          // client understands ocpp1.6 subprotocol
-      // strictMode: false                // enable strict validation of requests & responses
+  // start rpc_client
+  // start rpc_server
+  const server: RPCServer = new RPCServer({
+    protocols: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
+    strictMode: false // enable strict validation of requests & responses
+  })
+
+  server.auth((accept, reject, handshake) => {
+    // accept the incoming client
+    accept({
+      // anything passed to accept() will be attached as a 'session' property of the client.
+      // sessionId: handshake.identity
     })
+  })
 
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Connecting to backend...')
-    // connect to the OCPP server
-    await cli.connect()
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Connected')
+  server.on('client', async (client) => {
+    const cli_logger = logger.child({ client: client.identity })
 
-    // send a BootNotification request and await the response
-    const bootResponse: cBootNotification = await cli.call('BootNotification', {
-      chargePointModel: charge_point.chargePointModel,
-      chargePointSerialNumber: charge_point.chargePointSerialNumber,
-      chargePointVendor: charge_point.chargePointVendor,
-      firmwareVersion: charge_point.firmwareVersion
-    }) as cBootNotification
+    const ef_logger = cli_logger.child({ backend: 'e-flux' })
+    const cs_logger = cli_logger.child({ backend: 'charge.space' })
 
-    // check that the server accepted the client
-    if (bootResponse.status === 'Accepted') {
-      logger.info({ charge_point: charge_point.chargePointSerialNumber, bootResponse }, 'BootNotification is accepted!')
-      if (charge_point.configuration['HeartbeatInterval']) {
-        const heartbeatInterval = charge_point.configuration['HeartbeatInterval'].value
-        if (heartbeatInterval > 0) {
-          logger.info({ charge_point: charge_point.chargePointSerialNumber }, 'Starting Heartbeat interval!')
-          iHeartbeatInterval = globalThis.setInterval(() => {
-            heartbeat(cli)
-          }, heartbeatInterval * 1000)
-        } else {
-          logger.error({ heartbeatInterval }, 'Heartbeat interval value is invalid.')
+    cli_logger.debug('connected!')
+
+    if (backends[`${client.identity}-e-flux`]) {
+      ef_logger.debug({ backend: `${client.identity}-e-flux` },
+        'Already created a backend'
+      )
+    } else {
+      backends[`${client.identity}-e-flux`] = new RPCClient({
+        endpoint: 'ws://ocpp.road.io/e-flux',           // the OCPP endpoint URL
+        identity: 'JV76SMPI31237773496491',             // the OCPP identity
+        protocols: ['ocpp1.6'], // client understands ocpp1.6, 2.0.1 and 2.1 subprotocol
+        strictMode: false                               // enable strict validation of requests & responses
+      })
+      ef_logger.debug('Created backend')
+    }
+
+    const eflux: RPC_Client | undefined = backends[`${client.identity}-e-flux`]
+    if (!eflux) {
+      ef_logger.error('Failed to create backend')
+      throw new Error('Failed to create backend to e-FLux')
+    }
+
+    try {
+      if (eflux.state !== 1) {
+        // connect to the OCPP server
+        await eflux.connect()
+        ef_logger.debug('Connected!')
+      }
+    } catch {
+      ef_logger.debug('Failed to connect!')
+    }
+
+    if (backends[`${client.identity}-charge.space`]) {
+      cs_logger.debug({ backend: `${client.identity}-charge.space` },
+        'Already created a backend'
+      )
+    } else {
+      backends[`${client.identity}-charge.space`] = new RPCClient({
+        endpoint: 'wss://ocpp.charge.space/ocpp', // the OCPP endpoint URL
+        identity: '2203054852M',                  // the OCPP identity
+        protocols: ['ocpp1.6'],                   // client understands ocpp1.6 subprotocol
+        strictMode: false                         // enable strict validation of requests & responses
+      })
+      cs_logger.debug('Created backend')
+    }
+
+    const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]
+    if (!charge_amps) {
+      cs_logger.error('Failed to create backend')
+      // throw new Error('Failed to create backend to charge.space')
+    } else {
+      try {
+        if (charge_amps.state !== 1) {
+          // connect to the OCPP server
+          await charge_amps.connect()
+          cs_logger.debug('Connected!')
         }
+      } catch {
+        cs_logger.debug('Failed to connect!')
+      }
+    }
+
+    // cli2.handle('DataTransfer', async ({ params }) => {
+    //   logger.debug('Received DataTransfer from Charger', params)
+    //   return await client.call('DataTransfer', params).then(() => {
+    //     logger.debug('Received from ChargeAmps')
+    //   })
+    // })
+
+    let defaultHandler = async (method: string, params?: any): Promise<any> => {
+      let resp: any = Promise.resolve(undefined)
+      try {
+        resp = await eflux?.call(method, params)
+        ef_logger.debug({ method, params, resp }, 'Sent!')
+      } catch {
+        ef_logger.error('Error while sending!')
+      }
+      return resp
+    }
+
+    // create a wildcard handler to handle any RPC method, ideal since we are passing everything on to secondary clients
+    client.handle(async ({ method, params }: { method: any, params?: any }) => {
+      // This handler will be called if the incoming method cannot be handled elsewhere.
+      cli_logger.info(`Server got ${method} from ${client.identity}:`, params)
+
+      if (mq_client.connected) {
+        cli_logger.debug('Publish to MQTT')
+        mq_client.publish(`ocpp/${client.identity}/${method}`, Buffer.from(JSON.stringify(params)), {
+          qos: 0,
+          retain: false
+        })
       }
 
-      // send a StatusNotification request for the controller
-      await cli.call('StatusNotification', {
-        connectorId: 0,
-        errorCode: 'NoError',
-        status: 'Available'
-      })
+      try {
+        // custom code to fix charge amps data
+        let ca_params: any = Object.assign({}, params)
 
-    } else {
-      logger.info({ bootResponse }, 'BootNotification response is not accepted!, Handle this ...')
-    }
-  }
+        switch (method) {
+          case 'MeterValues':
+            if (ca_params.transactionId) {
+              ca_params.transactionId = tx_chargeamps
+            }
+            break
+          case 'StopTransaction':
+            if (ca_params.transactionId) {
+              ca_params.transactionId = tx_chargeamps
+            }
+            break
+        }
+        charge_amps?.call(method, ca_params).then((r: any) => {
+          cs_logger.debug({ method, params: ca_params, resp: r }, 'Sent!')
+          if (method === 'StartTransaction') {
+            tx_chargeamps = r.transactionId
+            cs_logger.debug('Received StartTransaction result!')
+          }
+        })
+      } catch {
+        cs_logger.error('Error while sending!')
+      }
+      return await defaultHandler(method, params)
+    })
+  })
+
+  await server.listen(8080)
+  logger.info('Server listening on port 8080!')
+
+  let mq_client: MqttClient = connect('mqtt://localhost:1883')
+  mq_client.on('connect', () => {
+    logger.info('Connected to MQTT server')
+  })
 }
 
-async function heartbeat(cli) {
-  // send a Heartbeat request and await the response
-  const heartbeatResponse: cHeartbeat = await cli.call('Heartbeat', {}) as cHeartbeat
-  // read the current server time from the response
-  logger.info({ time: heartbeatResponse.currentTime }, 'Server time is:')
-}
-
-main()
+await main()
