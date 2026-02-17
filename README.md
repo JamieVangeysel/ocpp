@@ -7,9 +7,26 @@ And a two way connection from the OCPP Aggregate Server to the E-FLux server, so
 
 Currently there is no audit log, we plan to implement daily logs of all messages; both incoming and outgoing.
 
-We plan to add the charger into homekit as well and publish all data to MQTT for integration into other systems plus reporting.
+Done, partially => We plan to add the charger into homekit as well and publish all data to MQTT for integration into other systems plus reporting.
 
 Currently all identifiers are hardcoded and unauthorized connections are not used.
 In the near future we will add a management system to configure multiple chargers, endpoints and endpoint configurations.
 
-## 
+## todo
+- [ ] Create config schema
+- [ ] 
+- [ ] Add management system
+
+## Pricing
+## Subscriptions
+# 0.00 (free) (capped at 10 chargepoints)
+# 100.00 per month Business (capped at 100 chargepoints)
+# 350.00 per month Enterprise (capped at 3500 chargepoints)
+# 999.00 per month Enterprise+ (uncapped chargepoints)
+## Add on per chargepoint
+# 30.00 one time setup fee
+# 6.30 per month AC Charger
+# 12.60 per month DC Charger
+
+## Add-ons per connector*
+QR scan to charge: 4% fee on charge cost + €0.20 per transaction

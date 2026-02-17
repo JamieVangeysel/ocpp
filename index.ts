@@ -16,7 +16,7 @@ let backends: { [key: string]: RPC_Client } = {}
 
 logger = pino({ level: 'trace' })
 
-async function main() {
+async function main(config: IConfig) {
   // start rpc_client
   // start rpc_server
   const server: RPCServer = new RPCServer({
@@ -52,6 +52,13 @@ async function main() {
         strictMode: false                               // enable strict validation of requests & responses
       })
       ef_logger.debug('Created backend')
+
+      backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }) => {
+        ef_logger.debug('Received ChangeConfiguration request from E-Flux OCPP, forwarding to client')
+        const resp = await client.call('ChangeConfiguration', params)
+        ef_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
+        return resp
+      })
     }
 
     const eflux: RPC_Client | undefined = backends[`${client.identity}-e-flux`]
@@ -82,6 +89,11 @@ async function main() {
         strictMode: false                         // enable strict validation of requests & responses
       })
       cs_logger.debug('Created backend')
+
+      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }) => {
+        cs_logger.debug('Received DataTransfer request from ChargeAmps OCPP Cloud, forwarding to client')
+        return await client.call('DataTransfer', params)
+      })
     }
 
     const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]

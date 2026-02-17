@@ -16,10 +16,12 @@
   "main": "index.ts",
   "scripts": {
     "build": "bun build ./index.ts --minify --target=node --outfile=index.mjs",
-    "start": "npm run build && npm run start",
+    "start": "npm run build && npm run serve",
     "serve": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "deploy": "npm run build && scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs && ssh java@10.220.20.4 'pm2 restart ocpp-server'"
+    "deploy": "scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs",
+    "deploy:restart": "ssh java@10.220.20.4 'pm2 restart ocpp-server'",
+    "ci": "npm run build && npm run deploy && npm run deploy:restart"
   },
   "dependencies": {
     "mqtt": "^5.15.0",
