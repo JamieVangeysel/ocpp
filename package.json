@@ -12,14 +12,14 @@
   },
   "license": "MIT",
   "author": "Jamie Vangeysel",
-  "type": "commonjs",
+  "type": "module",
   "main": "index.ts",
   "scripts": {
-    "build": "esbuild ./index.ts --allow-overwrite --bundle --platform=node --minify --packages=external --external:./config.js --outfile=index.js",
-    "build:server": "esbuild ./server.ts --allow-overwrite --bundle --platform=node --minify --packages=external --external:./config.js --outfile=server.js",
-    "start": "node index.js | pino-pretty",
-    "start:server": "node server.js | pino-pretty",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "bun build ./index.ts --minify --target=node --outfile=index.mjs",
+    "start": "npm run build && npm run start",
+    "serve": "node index.js | pino-pretty",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "deploy": "npm run build && scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs && ssh java@10.220.20.4 'pm2 restart ocpp-server'"
   },
   "dependencies": {
     "ocpp-rpc": "^2.2.1",

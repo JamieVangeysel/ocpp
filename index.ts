@@ -1,302 +1,157 @@
-import {
-  cBootNotification,
-  cHeartbeat,
-  cStartTransaction, cStopTransaction,
-  rStartTransaction,
-  rStopTransaction
-} from './typedefs/ocpp-message'
-
-import charge_points from './charge-points.json'
-
-import pino, { Logger } from 'pino'
-import { readFileSync } from 'fs'
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs'
+import pino, { type Logger } from 'pino'
+import { RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 
 const { RPCClient } = require('ocpp-rpc')
 
 // https://github.com/mikuso/ocpp-rpc/tree/master/lib
+// wss://ocpp.charge.space/ocpp
+// 2203054852M
 
+let tx_chargeamps: number = 124341561
 let logger: Logger
 
-logger = pino()
-logger.level = 'trace'
+let backends: { [key: string]: RPC_Client } = {}
+
+logger = pino({
+  level: 'trace'
+})
 
 async function main() {
-  logger.debug({ charge_points: charge_points.length }, 'main')
-  // return
-  for (let charge_point of charge_points) {
-    let iHeartbeatInterval
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Starting OCPP client for chargepoint!')
-    const cli: RPC_Client = new RPCClient({
-      endpoint: 'ws://ocpp.road.io/e-flux', // the OCPP endpoint URL
-      // endpoint: 'ws://172.18.20.35:8080',
-      identity: charge_point.chargePointSerialNumber, // the OCPP identity
-      protocols: ['ocpp1.6'],          // client understands ocpp1.6 subprotocol
-      strictMode: false                // enable strict validation of requests & responses
+  // start rpc_client
+  // start rpc_server
+  const server: RPCServer = new RPCServer({
+    protocols: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
+    strictMode: false       // enable strict validation of requests & responses
+  })
+
+  server.auth((accept, reject, handshake) => {
+    // accept the incoming client
+    accept({
+      // anything passed to accept() will be attached as a 'session' property of the client.
+      // sessionId: handshake.identity
     })
+  })
 
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Connecting to backend...')
-    // connect to the OCPP server
-    await cli.connect()
-    logger.debug({ charge_point: charge_point.chargePointSerialNumber }, 'Connected')
+  server.on('client', async (client) => {
+    const cli_logger = logger.child({ client: client.identity })
+    cli_logger.debug('connected!') // `XYZ123 connected!`
 
-    // send a BootNotification request and await the response
-    const bootResponse: cBootNotification = await cli.call('BootNotification', {
-      chargePointModel: charge_point.chargePointModel,
-      chargePointSerialNumber: charge_point.chargePointSerialNumber,
-      chargePointVendor: charge_point.chargePointVendor,
-      firmwareVersion: charge_point.firmwareVersion
-    }) as cBootNotification
-
-    // check that the server accepted the client
-    if (bootResponse.status === 'Accepted') {
-      logger.info({ charge_point: charge_point.chargePointSerialNumber, bootResponse }, 'BootNotification is accepted!')
-      if (charge_point.configuration['HeartbeatInterval']) {
-        const heartbeatInterval = Math.min(charge_point.configuration['HeartbeatInterval'].value, bootResponse.interval)
-        if (heartbeatInterval > 0) {
-          heartbeat(cli).then()
-          logger.info({ charge_point: charge_point.chargePointSerialNumber }, 'Starting Heartbeat interval!')
-          iHeartbeatInterval = globalThis.setInterval(() => {
-            heartbeat(cli).then()
-          }, heartbeatInterval * 1000)
-        } else {
-          logger.error({ heartbeatInterval }, 'Heartbeat interval value is invalid.')
-        }
-      }
-
-      // send a StatusNotification request for the controller
-      await cli.call('StatusNotification', {
-        connectorId: 0,
-        errorCode: 'NoError',
-        status: 'Available'
+    if (backends[`${client.identity}-e-flux`]) {
+      cli_logger.debug({ backend: `${client.identity}-e-flux` },
+        'Already created a backend to e-FLux'
+      )
+    } else {
+      backends[`${client.identity}-e-flux`] = new RPCClient({
+        endpoint: 'ws://ocpp.road.io/e-flux',           // the OCPP endpoint URL
+        identity: 'JV76SMPI31237773496491',             // the OCPP identity
+        protocols: ['ocpp1.6'], // client understands ocpp1.6, 2.0.1 and 2.1 subprotocol
+        strictMode: false                               // enable strict validation of requests & responses
       })
+      cli_logger.debug('Created backend to e-FLux')
+    }
 
-      for (let connector of charge_point.connectors) {
-        await cli.call('StatusNotification', {
-          connectorId: connector.connectorId,
-          errorCode: connector.errorCode,
-          status: connector.status
-        })
+    const eflux: RPC_Client | undefined = backends[`${client.identity}-e-flux`]
+    if (!eflux) {
+      cli_logger.error('Failed to create backend to e-FLux')
+      throw new Error('Failed to create backend to e-FLux')
+    }
+
+    try {
+      if (eflux.state !== 1) {
+        // connect to the OCPP server
+        await eflux.connect()
+        cli_logger.debug('Connected to e-FLux')
       }
+    } catch {
+      cli_logger.debug('Failed to connect to e-FLux')
+    }
 
-      // check if there are transactions in backlog
+    if (backends[`${client.identity}-charge.space`]) {
+      cli_logger.debug({ backend: `${client.identity}-charge.space` },
+        'Already created a backend to charge.space'
+      )
+    } else {
+      backends[`${client.identity}-charge.space`] = new RPCClient({
+        endpoint: 'wss://ocpp.charge.space/ocpp', // the OCPP endpoint URL
+        identity: '2203054852M',                  // the OCPP identity
+        protocols: ['ocpp1.6'],                   // client understands ocpp1.6 subprotocol
+        strictMode: false                         // enable strict validation of requests & responses
+      })
+      cli_logger.debug('Created backend to charge.space')
+    }
+
+    const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]
+    if (!charge_amps) {
+      cli_logger.error('Failed to create backend to charge.space')
+      // throw new Error('Failed to create backend to charge.space')
+    } else {
       try {
-        const txJson = readFileSync('./transactions.json', { encoding: 'utf8' })
-        if (txJson) {
-          const transactions: any[] = JSON.parse(txJson)
-          const unsendTx = transactions.filter(e => e.id === undefined || !e.sent)
-          logger.debug({ unsendTx }, 'The following transactions are stored in backlog and must be send')
-          for (const tx of transactions) {
-            if (tx.id && tx.sent) {
-              // the transaction was already sent to server
-              continue
-            }
-            if (!tx.id) {
-              const startTx: rStartTransaction = {
-                connectorId: tx.connectorId,
-                idTag: tx.idTag,
-                meterStart: 0,
-                timestamp: tx.startTime
-              }
-              console.log(`Received ${tx.startTime} to ${tx.stopTime} Charge: ${tx.chargeEnergy}Wh`)
-              const resp: cStartTransaction = await cli.call('StartTransaction', startTx) as cStartTransaction
-              if (resp.transactionId) {
-                console.debug({ transaction_id: resp.transactionId }, 'Started transaction')
-                tx.id = resp.transactionId
-                writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
-              }
-            }
-            if (tx.id) {
-              const stopTx: rStopTransaction = {
-                transactionId: tx.id,
-                meterStop: tx.chargeEnergy,
-                reason: 'EVDisconnected',
-                timestamp: tx.stopTime
-              }
-              const resp: cStopTransaction = await cli.call('StopTransaction', stopTx)
-              if (resp) {
-                console.debug({ transaction_id: tx.id }, 'Stopped transaction')
-                tx.sent = true
-                writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
-              }
-            }
-          }
+        if (charge_amps.state !== 1) {
+          // connect to the OCPP server
+          await charge_amps.connect()
+          cli_logger.debug('Connected to charge.space')
         }
-      } catch (error) {
-        logger.error({ error }, 'Error while reading transactions from disk')
+      } catch {
+        cli_logger.debug('Failed to connect to charge.space')
       }
-
-      // start custom event watcher
-      globalThis.setInterval(() => {
-        checkEvents(cli, charge_point).then()
-      }, 10 * 1000)
-    } else {
-      logger.info({ bootResponse }, 'BootNotification response is not accepted!, Handle this ...')
     }
-  }
-}
 
-async function checkEvents(cli: RPC_Client, charge_point: any) {
-  try {
-    if (existsSync('./events.json')) {
-      const eventsJson = readFileSync('./events.json', { encoding: 'utf8' })
-      const events: any[] = JSON.parse(eventsJson)
-      let newEvents: any[] = Array.from(events)
+    // cli2.handle('DataTransfer', async ({ params }) => {
+    //   logger.debug('Received DataTransfer from Charger', params)
+    //   return await client.call('DataTransfer', params).then(() => {
+    //     logger.debug('Received from ChargeAmps')
+    //   })
+    // })
 
-      for (const event of events) {
-        if (event.notBefore) {
-          // this is a scheduled event, CAUTION.
-          if (new Date(event.notBefore).getTime() > Date.now()) {
-            logger.info({
-              event: event.method,
-              scheduled_time: new Date(event.notBefore).getTime(),
-              current_time: Date.now()
-            }, 'This is a scheduled event that will be run later!')
-            continue
-          }
-        }
-        logger.debug({ event }, 'Running logic for event: ')
+    let defaultHandler = async (method: string, params?: any): Promise<any> => {
+      let resp: any = Promise.resolve(undefined)
+      try {
+        resp = await eflux?.call(method, params)
+        cli_logger.debug({ method, params, resp }, 'Sent to E-Flux')
+      } catch {
+        cli_logger.error('Error while sending to E-Flux!')
+      }
+      return resp
+    }
 
-        const done = () => {
-          newEvents.splice(newEvents.indexOf(event), 1)
-          appendFileSync('./sent-events.json', JSON.stringify(event) + '\n')
-        }
+    // create a wildcard handler to handle any RPC method, ideal since we are passing everything on to secondary clients
+    client.handle(async ({ method, params }: { method: any, params?: any }) => {
+      // This handler will be called if the incoming method cannot be handled elsewhere.
+      cli_logger.info(`Server got ${method} from ${client.identity}:`, params)
 
-        switch (event.method) {
-          case 'StatusNotification':
-            // try to find cp en cid in config
-            const con = charge_points
-              .find(e => e.chargePointSerialNumber === charge_point.chargePointSerialNumber)
-              .connectors
-              .find(e => e.connectorId === event.payload.connectorId)
-            if (con) {
-              logger.debug('Found the connector!')
-              try {
-                await cli.call('StatusNotification', event.payload)
-                con.status = event.payload.status
-                con.errorCode = event.payload.errorCode
-                console.log(charge_points)
-                writeFileSync('./charge-points.json', JSON.stringify(charge_points))
-                done()
-              } catch {
-                logger.error({ event }, 'Error while sending: ' + event.method)
-              }
-            } else {
-              logger.warn('Could not find the connector!')
-            }
-            break
+      try {
+        // custom code to fix charge amps data
+        let ca_params: any = Object.assign({}, params)
 
-          case 'StartTransaction':
-            try {
-              await cli.call('StatusNotification', {
-                connectorId: event.payload.connectorId,
-                errorCode: 'NoError',
-                status: 'Preparing'
-              })
-              const startTxResp: cStartTransaction = await cli.call('StartTransaction', event.payload) as cStartTransaction
-              if (startTxResp.transactionId) {
-                // schedule status notification for charging
-                newEvents.push({
-                  method: 'StatusNotification',
-                  notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
-                  payload: {
-                    connectorId: event.payload.connectorId,
-                    errorCode: 'NoError',
-                    status: 'Charging'
-                  }
-                })
-                addTransaction({
-                  transactionId: startTxResp.transactionId,
-                  startTime: event.payload.timestamp,
-                  ...event.payload
-                })
-                done()
-              }
-            } catch {
-              logger.error({ event }, 'Error while sending: ' + event.method)
-            }
-            break
-
-          case 'StopTransaction':
-            try {
-              const stopTxResp: cStopTransaction = await cli.call('StopTransaction', event.payload) as cStopTransaction
-              // schedule status notification for finishing and available
-              // newEvents.push({
-              //   method: 'StatusNotification',
-              //   notBefore: new Date(Date.now() + 2 * 1000).toISOString(),
-              //   payload: {
-              //     connectorId: event.payload.connectorId,
-              //     errorCode: 'NoError',
-              //     status: 'Finishing'
-              //   }
-              // })
-              // newEvents.push({
-              //   method: 'StatusNotification',
-              //   notBefore: new Date(Date.now() + 17 * 1000).toISOString(),
-              //   payload: {
-              //     connectorId: event.payload.connectorId,
-              //     errorCode: 'NoError',
-              //     status: 'Available'
-              //   }
-              // })
-              // endTransaction({
-              //   transactionId: startTxResp.transactionId,
-              //   startTime: event.payload.timestamp,
-              //   ...event.payload
-              // })
-              done()
-            } catch {
-              logger.error({ event }, 'Error while sending: ' + event.method)
-            }
-            break
-
+        switch (method) {
           case 'MeterValues':
-            try {
-              await cli.call('MeterValues', event.payload)
-              done()
-            } catch {
-              logger.error({ event }, 'Error while sending: ' + event.method)
+            if (ca_params.transactionId) {
+              ca_params.transactionId = tx_chargeamps
             }
             break
-
+          case 'StopTransaction':
+            if (ca_params.transactionId) {
+              ca_params.transactionId = tx_chargeamps
+            }
+            break
         }
+        charge_amps?.call(method, ca_params).then((r: any) => {
+          cli_logger.debug('Sent to ChargeAmps complete')
+          if (method === 'StartTransaction') {
+            tx_chargeamps = r.transactionId
+            cli_logger.debug('Received StartTransaction result from chargeAmps Backend!')
+          }
+        })
+      } catch {
+        cli_logger.error('Error while sending to ChargeAmps!')
       }
-      logger.debug({ events_length: newEvents.length }, 'New events!')
-      writeFileSync('./events.json', JSON.stringify(newEvents), { encoding: 'utf8' })
-    } else {
-      logger.debug('There is no events.json')
-    }
-  } catch (e) {
-    logger.error('Error while checking events from disk!')
-  }
+      return await defaultHandler(method, params)
+    })
+  })
+
+  await server.listen(8080)
+  logger.info('Server listening on port 8080!')
 }
 
-function addTransaction(transaction: any) {
-  try {
-    if (existsSync('./transactions.json')) {
-      const txJson = readFileSync('./transactions.json', { encoding: 'utf8' })
-      if (txJson) {
-        const transactions: any[] = JSON.parse(txJson)
-        transactions.push(transaction)
-        writeFileSync('./transactions.json', JSON.stringify(transactions), { encoding: 'utf8' })
-      } else {
-        writeFileSync('./transactions.json', JSON.stringify([transaction]), { encoding: 'utf8' })
-      }
-    } else {
-      writeFileSync('./transactions.json', JSON.stringify([transaction]), { encoding: 'utf8' })
-    }
-  } catch {
-    logger.error('Error while adding transaction to disk!')
-  }
-}
-
-async function heartbeat(cli) {
-  // send a Heartbeat request and await the response
-  const heartbeatResponse: cHeartbeat = await cli.call('Heartbeat', {}) as cHeartbeat
-  // read the current server time from the response
-  logger.info({ currentTime: heartbeatResponse.currentTime }, 'Server time is:')
-}
-
-main()
-
+await main()
