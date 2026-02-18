@@ -1,5 +1,5 @@
 import pino, { type Logger } from 'pino'
-import { RPCServer } from 'ocpp-rpc'
+import { RPCNotImplementedError, RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 import { connect, MqttClient } from 'mqtt'
 
@@ -82,7 +82,7 @@ async function main(config: IConfig) {
         'Already created a backend'
       )
     } else {
-      backends[`${client.identity}-charge.space`] = new RPCClient({
+      const tmp_cli = new RPCClient({
         endpoint: 'wss://ocpp.charge.space/ocpp', // the OCPP endpoint URL
         identity: '2203054852M',                  // the OCPP identity
         protocols: ['ocpp1.6'],                   // client understands ocpp1.6 subprotocol
@@ -90,10 +90,24 @@ async function main(config: IConfig) {
       })
       cs_logger.debug('Created backend')
 
-      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }) => {
-        cs_logger.debug('Received DataTransfer request from ChargeAmps OCPP Cloud, forwarding to client')
+      tmp_cli.handle('DataTransfer', async ({ params }: { params: any }) => {
+        cs_logger.debug('Received DataTransfer request, forwarding to client')
         return await client.call('DataTransfer', params)
       })
+
+      tmp_cli.handle('ChangeConfiguration', async ({ params }: { params: any }) => {
+        cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
+        if (params.key === 'UserCurrentLimit') {
+          cs_logger.debug('Requested update of UserCurrentLimit')
+        } else {
+          return new RPCNotImplementedError()
+        }
+        const resp = await client.call('ChangeConfiguration', params)
+        cs_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
+        return resp
+      })
+
+      backends[`${client.identity}-charge.space`] = tmp_cli
     }
 
     const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]
