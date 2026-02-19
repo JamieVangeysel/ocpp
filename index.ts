@@ -1,5 +1,5 @@
 import pino, { type Logger } from 'pino'
-import { RPCNotImplementedError, RPCServer } from 'ocpp-rpc'
+import { RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 import { connect, MqttClient } from 'mqtt'
 
@@ -16,7 +16,7 @@ let backends: { [key: string]: RPC_Client } = {}
 
 logger = pino({ level: 'trace' })
 
-async function main(config: IConfig) {
+async function main() { // config: IConfig
   // start rpc_client
   // start rpc_server
   const server: RPCServer = new RPCServer({
@@ -25,14 +25,27 @@ async function main(config: IConfig) {
   })
 
   server.auth((accept, reject, handshake) => {
-    // accept the incoming client
-    accept({
-      // anything passed to accept() will be attached as a 'session' property of the client.
-      // sessionId: handshake.identity
-    })
+    // anything passed to accept() will be attached as a 'session' property of the client.
+    // sessionId: handshake.identity
+
+    logger.debug({ handshake }, 'authenticating a new client')
+
+    if (handshake.identity === '2203054852M') {
+      // accept the incoming client
+      accept({})
+    } else if (handshake.identity === 'JV76SMPI31237773496491') {
+      // accept the incoming client
+      accept({})
+    } else {
+      if (handshake.remoteAddress === 'help') {
+        reject(401, 'Unauthorized')
+      }
+    }
+    // fallback: accept the incoming client
+    accept({})
   })
 
-  server.on('client', async (client) => {
+  server.on('client', async (client: RPC_Client) => {
     const cli_logger = logger.child({ client: client.identity })
 
     const ef_logger = cli_logger.child({ backend: 'e-flux' })
@@ -53,9 +66,12 @@ async function main(config: IConfig) {
       })
       ef_logger.debug('Created backend')
 
-      backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }) => {
+      backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }): Promise<Record<string, any>> => {
         ef_logger.debug('Received ChangeConfiguration request from E-Flux OCPP, forwarding to client')
-        const resp = await client.call('ChangeConfiguration', params)
+        if (client.state !== 1) {
+          await client.connect()
+        }
+        const resp: Record<string, any> = await client.call('ChangeConfiguration', params) as Record<string, any>
         ef_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
         return resp
       })
@@ -92,17 +108,27 @@ async function main(config: IConfig) {
 
       tmp_cli.handle('DataTransfer', async ({ params }: { params: any }) => {
         cs_logger.debug('Received DataTransfer request, forwarding to client')
+        if (client.state !== 1) {
+          await client.connect()
+        }
         return await client.call('DataTransfer', params)
       })
 
       tmp_cli.handle('ChangeConfiguration', async ({ params }: { params: any }) => {
+        // only accep specific keys from chargeamps as we handle management on eflux side
+        const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight']
         cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
-        if (params.key === 'UserCurrentLimit') {
-          cs_logger.debug('Requested update of UserCurrentLimit')
+        if (acceptedKeys.includes(params.key)) {
+          cs_logger.debug({ key: params.key }, 'Requested update for')
         } else {
-          return new RPCNotImplementedError()
+          return {
+            status: 'NotSupported'
+          }
         }
-        const resp = await client.call('ChangeConfiguration', params)
+        if (client.state !== 1) {
+          await client.connect()
+        }
+        const resp: Record<string, any> = await client.call('ChangeConfiguration', params) as Record<string, any>
         cs_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
         return resp
       })
@@ -133,7 +159,7 @@ async function main(config: IConfig) {
     //   })
     // })
 
-    let defaultHandler = async (method: string, params?: any): Promise<any> => {
+    let defaultHandler = async (method: string | undefined, params?: any): Promise<any> => {
       let resp: any = Promise.resolve(undefined)
       try {
         resp = await eflux?.call(method, params)
@@ -145,9 +171,9 @@ async function main(config: IConfig) {
     }
 
     // create a wildcard handler to handle any RPC method, ideal since we are passing everything on to secondary clients
-    client.handle(async ({ method, params }: { method: any, params?: any }) => {
+    client.handle(async ({ method, params }) => {
       // This handler will be called if the incoming method cannot be handled elsewhere.
-      cli_logger.info(`Server got ${method} from ${client.identity}:`, params)
+      cli_logger.info({ params }, `Server got ${method} from ${client.identity}`)
 
       if (mq_client.connected) {
         cli_logger.debug('Publish to MQTT')
