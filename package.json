@@ -19,7 +19,9 @@
     "start": "npm run build && npm run serve",
     "serve": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "deploy": "scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs",
+    "deploy": "npm run deploy:config && npm run deploy:index",
+    "deploy:config": "scp ./config.json java@10.220.20.4:~/ocpp-charger/config.json",
+    "deploy:index": "scp ./index.mjs java@10.220.20.4:~/ocpp-charger/index.mjs",
     "deploy:restart": "ssh java@10.220.20.4 'pm2 restart ocpp-server'",
     "ci": "npm run build && npm run deploy && npm run deploy:restart"
   },
