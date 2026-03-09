@@ -1,7 +1,9 @@
 import pino, { type Logger } from 'pino'
-import { RPCServer } from 'ocpp-rpc'
+import { RPCNotImplementedError, RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 import { connect, MqttClient } from 'mqtt'
+import type { IConfig } from './config.ts'
+import { readFileSync } from 'node:fs'
 
 const { RPCClient } = require('ocpp-rpc')
 
@@ -14,15 +16,13 @@ let logger: Logger
 
 let backends: { [key: string]: RPC_Client } = {}
 
-logger = pino({ level: 'trace' })
-
-async function main() { // config: IConfig
+async function main(config: IConfig) {
+  logger = pino(config.logging)
   // start rpc_client
   // start rpc_server
-  const server: RPCServer = new RPCServer({
-    protocols: ['ocpp1.6', 'ocpp2.0.1', 'ocpp2.1'],
-    strictMode: false // enable strict validation of requests & responses
-  })
+  const server: RPCServer = new RPCServer(
+    config.rpcConfig
+  )
 
   server.auth((accept, reject, handshake) => {
     // anything passed to accept() will be attached as a 'session' property of the client.
@@ -69,6 +69,7 @@ async function main() { // config: IConfig
       backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }): Promise<Record<string, any>> => {
         ef_logger.debug('Received ChangeConfiguration request from E-Flux OCPP, forwarding to client')
         if (client.state !== 1) {
+          ef_logger.debug('Not connected, await reconnection!')
           await client.connect()
         }
         const resp: Record<string, any> = await client.call('ChangeConfiguration', params) as Record<string, any>
@@ -109,6 +110,7 @@ async function main() { // config: IConfig
       tmp_cli.handle('DataTransfer', async ({ params }: { params: any }) => {
         cs_logger.debug('Received DataTransfer request, forwarding to client')
         if (client.state !== 1) {
+          cs_logger.debug('Not connected, await reconnection!')
           await client.connect()
         }
         return await client.call('DataTransfer', params)
@@ -119,19 +121,25 @@ async function main() { // config: IConfig
         const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight']
         cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
         if (acceptedKeys.includes(params.key)) {
-          cs_logger.debug({ key: params.key }, 'Requested update for')
+          cs_logger.debug({ key: params.key }, `Requested update for '${params.key}'`)
         } else {
           return {
             status: 'NotSupported'
           }
         }
         if (client.state !== 1) {
+          cs_logger.debug('Not connected, await reconnection!')
           await client.connect()
+        } else {
+          cs_logger.debug('Already connected!')
         }
         const resp: Record<string, any> = await client.call('ChangeConfiguration', params) as Record<string, any>
         cs_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
         return resp
       })
+
+      tmp_cli.on('error', (err: any) => {})
+      tmp_cli.on('close', (err: any) => {})
 
       backends[`${client.identity}-charge.space`] = tmp_cli
     }
@@ -213,8 +221,8 @@ async function main() { // config: IConfig
     })
   })
 
-  await server.listen(8080)
-  logger.info('Server listening on port 8080!')
+  await server.listen(config.port)
+  logger.info(`Server listening on port ${config.port}!`)
 
   let mq_client: MqttClient = connect('mqtt://localhost:1883')
   mq_client.on('connect', () => {
@@ -222,4 +230,6 @@ async function main() { // config: IConfig
   })
 }
 
-await main()
+const cfg: IConfig = JSON.parse(readFileSync('./config.json', { encoding: 'utf-8' }))
+
+await main(cfg)
