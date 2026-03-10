@@ -1,9 +1,9 @@
 import pino, { type Logger } from 'pino'
-import { RPCNotImplementedError, RPCServer } from 'ocpp-rpc'
+import { RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 import { connect, MqttClient } from 'mqtt'
 import type { IConfig } from './config.ts'
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 
 const { RPCClient } = require('ocpp-rpc')
 
@@ -31,9 +31,11 @@ async function main(config: IConfig) {
     logger.debug({ handshake }, 'authenticating a new client')
 
     if (handshake.identity === '2203054852M') {
+      logger.debug('Accepted ChargeAmps Halo')
       // accept the incoming client
       accept({})
     } else if (handshake.identity === 'JV76SMPI31237773496491') {
+      logger.debug('Accepted Dummy OCPP Client')
       // accept the incoming client
       accept({})
     } else {
@@ -43,6 +45,13 @@ async function main(config: IConfig) {
     }
     // fallback: accept the incoming client
     accept({})
+  })
+
+  server.on('error', (err: any) => {
+    logger.error({ err }, 'Connection has given an error!')
+  })
+  server.on('close', (err: any) => {
+    logger.error({ err }, 'Connection was closed!')
   })
 
   server.on('client', async (client: RPC_Client) => {
@@ -98,8 +107,54 @@ async function main(config: IConfig) {
       cs_logger.debug({ backend: `${client.identity}-charge.space` },
         'Already created a backend'
       )
+
+      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: { params: any }) => {
+        cs_logger.debug('Received DataTransfer request, forwarding to client')
+        if (client.state !== 1) {
+          cs_logger.debug('Not connected, await reconnection!')
+          await client.connect()
+        }
+        const resp = await client.call('DataTransfer', params)
+        cs_logger.debug({ method: 'DataTransfer', params, resp }, 'Sent!')
+        return resp
+      })
+
+      backends[`${client.identity}-charge.space`]?.handle('GetConfiguration', async (): Promise<any> => {
+        cs_logger.debug('Received GetConfiguration request, forwarding to client')
+        if (client.state !== 1) {
+          cs_logger.debug('Not connected, await reconnection!')
+          await client.connect()
+        }
+        const resp = await client.call('GetConfiguration')
+        cs_logger.debug({ method: 'GetConfiguration', resp }, 'Sent!')
+        return resp
+      })
+
+      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: {
+        params: any
+      }) => {
+        // only accep specific keys from chargeamps as we handle management on eflux side
+        const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight', 'MeterValueSampleInterval']
+        cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
+        if (acceptedKeys.includes(params.key)) {
+          cs_logger.debug({ key: params.key }, `Requested update for '${params.key}'`)
+        } else {
+          return {
+            status: 'NotSupported'
+          }
+        }
+        if (client.state !== 1) {
+          cs_logger.debug('Not connected, await reconnection!')
+          // await client.connect()
+        } else {
+          cs_logger.debug('Already connected!')
+        }
+        const resp: Record<string, any> = await client.call('ChangeConfiguration', params) as Record<string, any>
+        cs_logger.debug({ method: 'ChangeConfiguration', params, resp }, 'Sent!')
+        return resp
+      })
     } else {
-      const tmp_cli = new RPCClient({
+      backends[`${client.identity}-charge.space`] = new RPCClient({
         endpoint: 'wss://ocpp.charge.space/ocpp', // the OCPP endpoint URL
         identity: '2203054852M',                  // the OCPP identity
         protocols: ['ocpp1.6'],                   // client understands ocpp1.6 subprotocol
@@ -107,16 +162,18 @@ async function main(config: IConfig) {
       })
       cs_logger.debug('Created backend')
 
-      tmp_cli.handle('DataTransfer', async ({ params }: { params: any }) => {
+      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: { params: any }) => {
         cs_logger.debug('Received DataTransfer request, forwarding to client')
         if (client.state !== 1) {
           cs_logger.debug('Not connected, await reconnection!')
-          await client.connect()
+          // await client.connect()
         }
         return await client.call('DataTransfer', params)
       })
 
-      tmp_cli.handle('ChangeConfiguration', async ({ params }: { params: any }) => {
+      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: {
+        params: any
+      }) => {
         // only accep specific keys from chargeamps as we handle management on eflux side
         const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight']
         cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
@@ -129,7 +186,7 @@ async function main(config: IConfig) {
         }
         if (client.state !== 1) {
           cs_logger.debug('Not connected, await reconnection!')
-          await client.connect()
+          // await client.connect()
         } else {
           cs_logger.debug('Already connected!')
         }
@@ -138,10 +195,12 @@ async function main(config: IConfig) {
         return resp
       })
 
-      tmp_cli.on('error', (err: any) => {})
-      tmp_cli.on('close', (err: any) => {})
-
-      backends[`${client.identity}-charge.space`] = tmp_cli
+      backends[`${client.identity}-charge.space`]?.on('error', (err: any) => {
+        cs_logger.error('Connection had error!')
+      })
+      backends[`${client.identity}-charge.space`]?.on('close', (err: any) => {
+        cs_logger.error('Connection was closed!')
+      })
     }
 
     const charge_amps: RPC_Client | undefined = backends[`${client.identity}-charge.space`]
@@ -152,6 +211,7 @@ async function main(config: IConfig) {
       try {
         if (charge_amps.state !== 1) {
           // connect to the OCPP server
+          // cs_logger.debug('Not connected, await reconnection!')
           await charge_amps.connect()
           cs_logger.debug('Connected!')
         }
@@ -173,7 +233,7 @@ async function main(config: IConfig) {
         resp = await eflux?.call(method, params)
         ef_logger.debug({ method, params, resp }, 'Sent!')
       } catch {
-        ef_logger.error('Error while sending!')
+        ef_logger.error({ method, params }, 'Error while sending!')
       }
       return resp
     }
@@ -198,19 +258,19 @@ async function main(config: IConfig) {
         switch (method) {
           case 'MeterValues':
             if (ca_params.transactionId) {
-              ca_params.transactionId = tx_chargeamps
+              ca_params.transactionId = txChargeAmps()
             }
             break
           case 'StopTransaction':
             if (ca_params.transactionId) {
-              ca_params.transactionId = tx_chargeamps
+              ca_params.transactionId = txChargeAmps()
             }
             break
         }
         charge_amps?.call(method, ca_params).then((r: any) => {
           cs_logger.debug({ method, params: ca_params, resp: r }, 'Sent!')
           if (method === 'StartTransaction') {
-            tx_chargeamps = r.transactionId
+            writeFileSync('./tx-ca.txt', `${r.transactionId}`, { encoding: 'utf-8' })
             cs_logger.debug('Received StartTransaction result!')
           }
         })
@@ -233,3 +293,12 @@ async function main(config: IConfig) {
 const cfg: IConfig = JSON.parse(readFileSync('./config.json', { encoding: 'utf-8' }))
 
 await main(cfg)
+
+const txChargeAmps = () => {
+  let transaction_id: number | undefined
+  let tx = readFileSync('./tx-ca.txt', { encoding: 'utf-8' })
+  if (tx && !isNaN(Number(tx))) {
+    transaction_id = Number(tx)
+  }
+  return transaction_id
+}
