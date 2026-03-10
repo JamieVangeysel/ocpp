@@ -1,5 +1,5 @@
 import pino, { type Logger } from 'pino'
-import { RPCServer } from 'ocpp-rpc'
+import { type IHandlersOption, RPCServer } from 'ocpp-rpc'
 import RPC_Client from 'ocpp-rpc/lib/client'
 import { connect, MqttClient } from 'mqtt'
 import type { IConfig } from './config.ts'
@@ -11,7 +11,6 @@ const { RPCClient } = require('ocpp-rpc')
 // wss://ocpp.charge.space/ocpp
 // 2203054852M
 
-let tx_chargeamps: number = 124341561
 let logger: Logger
 
 let backends: { [key: string]: RPC_Client } = {}
@@ -75,7 +74,7 @@ async function main(config: IConfig) {
       })
       ef_logger.debug('Created backend')
 
-      backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }): Promise<Record<string, any>> => {
+      backends[`${client.identity}-e-flux`]?.handle('ChangeConfiguration', async ({ params }: IHandlersOption): Promise<Record<string, any>> => {
         ef_logger.debug('Received ChangeConfiguration request from E-Flux OCPP, forwarding to client')
         if (client.state !== 1) {
           ef_logger.debug('Not connected, await reconnection!')
@@ -108,36 +107,34 @@ async function main(config: IConfig) {
         'Already created a backend'
       )
 
-      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: { params: any }) => {
+      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: IHandlersOption): Promise<Record<string, any>> => {
         cs_logger.debug('Received DataTransfer request, forwarding to client')
         if (client.state !== 1) {
           cs_logger.debug('Not connected, await reconnection!')
           await client.connect()
         }
-        const resp = await client.call('DataTransfer', params)
+        const resp: Record<string, any> = await client.call('DataTransfer', params) as Record<string, any>
         cs_logger.debug({ method: 'DataTransfer', params, resp }, 'Sent!')
         return resp
       })
 
-      backends[`${client.identity}-charge.space`]?.handle('GetConfiguration', async (): Promise<any> => {
+      backends[`${client.identity}-charge.space`]?.handle('GetConfiguration', async (): Promise<Record<string, any>> => {
         cs_logger.debug('Received GetConfiguration request, forwarding to client')
         if (client.state !== 1) {
           cs_logger.debug('Not connected, await reconnection!')
           await client.connect()
         }
-        const resp = await client.call('GetConfiguration')
+        const resp = await client.call('GetConfiguration') as Record<string, any>
         cs_logger.debug({ method: 'GetConfiguration', resp }, 'Sent!')
         return resp
       })
 
-      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: {
-        params: any
-      }) => {
+      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: IHandlersOption): Promise<Record<string, any>> => {
         // only accep specific keys from chargeamps as we handle management on eflux side
         const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight', 'MeterValueSampleInterval']
         cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
-        if (acceptedKeys.includes(params.key)) {
-          cs_logger.debug({ key: params.key }, `Requested update for '${params.key}'`)
+        if (acceptedKeys.includes(params?.key)) {
+          cs_logger.debug({ key: params?.key }, `Requested update for '${params?.key}'`)
         } else {
           return {
             status: 'NotSupported'
@@ -162,23 +159,21 @@ async function main(config: IConfig) {
       })
       cs_logger.debug('Created backend')
 
-      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: { params: any }) => {
+      backends[`${client.identity}-charge.space`]?.handle('DataTransfer', async ({ params }: IHandlersOption): Promise<Record<string, any>> => {
         cs_logger.debug('Received DataTransfer request, forwarding to client')
         if (client.state !== 1) {
           cs_logger.debug('Not connected, await reconnection!')
           // await client.connect()
         }
-        return await client.call('DataTransfer', params)
+        return await client.call('DataTransfer', params) as Record<string, any>
       })
 
-      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: {
-        params: any
-      }) => {
+      backends[`${client.identity}-charge.space`]?.handle('ChangeConfiguration', async ({ params }: IHandlersOption): Promise<Record<string, any>> => {
         // only accep specific keys from chargeamps as we handle management on eflux side
         const acceptedKeys = ['UserCurrentLimit', 'LightIntensity', 'Downlight']
         cs_logger.debug('Received ChangeConfiguration request, forwarding to client')
-        if (acceptedKeys.includes(params.key)) {
-          cs_logger.debug({ key: params.key }, `Requested update for '${params.key}'`)
+        if (acceptedKeys.includes(params?.key)) {
+          cs_logger.debug({ key: params?.key }, `Requested update for '${params?.key}'`)
         } else {
           return {
             status: 'NotSupported'
